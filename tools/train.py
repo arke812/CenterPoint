@@ -22,6 +22,9 @@ from det3d.torchie.apis import (
     train_detector,
 )
 
+# import torch.cuda.profiler as profiler
+# import pyprof
+# pyprof.init()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a detector")

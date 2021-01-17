@@ -9,7 +9,9 @@ easydict
 open3d-python                                                                                             
 terminaltables                                                                                            
 pytest-runner                                                                                             
-addict                                                                                                    
+addict
+cython
+numpy
 pycocotools                                                                                               
 imagecorruptions                                                                                          
 objgraph                                                                                                  
