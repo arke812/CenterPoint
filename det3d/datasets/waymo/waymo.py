@@ -91,13 +91,15 @@ class WaymoDataset(PointCloudDataset):
     def __getitem__(self, idx):
         return self.get_sensor_data(idx)
 
-    def evaluation(self, detections, output_dir=None, testset=False):
+    def evaluation(self, detections, output_dir=None, dataset_separation='', obj_type=None):
         from .waymo_common import _create_pd_detection, reorganize_info
 
         infos = self._waymo_infos 
         infos = reorganize_info(infos)
 
-        _create_pd_detection(detections, infos, output_dir)
+        _create_pd_detection(detections, infos, output_dir,
+                             dataset_separation=dataset_separation,
+                             obj_type=obj_type)
 
         print("use waymo devkit tool for evaluation")
 

@@ -37,6 +37,12 @@ def get_obj(path):
 
 # ignore sign class 
 LABEL_TO_TYPE = {0: 1, 1:2, 2:4}
+TYPE_TO_STR = {
+    1: 'vehicle',
+    2: 'pedestrian',
+    3: 'sign',
+    4: 'cyclist'
+}
 
 import uuid 
 
@@ -49,8 +55,12 @@ class UUIDGeneration():
         return self.mapping[seed]
 uuid_gen = UUIDGeneration()
 
-def _create_pd_detection(detections, infos, result_path, tracking=False):
+def _create_pd_detection(detections, infos, result_path, tracking=False,
+                         dataset_separation='', obj_type=None):
     """Creates a prediction objects file."""
+
+    assert obj_type is None or obj_type in ['vehicle', 'pedestrian', 'cyclist']
+
     from waymo_open_dataset import label_pb2
     from waymo_open_dataset.protos import metrics_pb2
 
@@ -78,7 +88,14 @@ def _create_pd_detection(detections, infos, result_path, tracking=False):
             det  = box3d[i]
             score = scores[i]
 
+            # if score < 0.25:
+            #     continue
+
             label = labels[i]
+            typ = LABEL_TO_TYPE[label]
+            if obj_type:
+                if obj_type != TYPE_TO_STR[typ]:
+                    continue
 
             o = metrics_pb2.Object()
             o.context_name = obj['scene_name']
@@ -96,7 +113,7 @@ def _create_pd_detection(detections, infos, result_path, tracking=False):
             o.object.box.CopyFrom(box)
             o.score = score
             # Use correct type.
-            o.object.type = LABEL_TO_TYPE[label] 
+            o.object.type = typ
 
             if tracking:
                 o.object.id = uuid_gen.get_uuid(int(tracking_ids[i]))
@@ -107,7 +124,12 @@ def _create_pd_detection(detections, infos, result_path, tracking=False):
     if tracking:
         path = os.path.join(result_path, 'tracking_pred.bin')
     else:
-        path = os.path.join(result_path, 'detection_pred.bin')
+        if obj_type:
+            bin_name = 'detection_3d_{}_detection_{}.bin'.format(
+                obj_type, dataset_separation)
+        else:
+            bin_name = 'detection_pred.bin'
+        path = os.path.join(result_path, bin_name)
 
     print("results saved to {}".format(path))
     f = open(path, 'wb')

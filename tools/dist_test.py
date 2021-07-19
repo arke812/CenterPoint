@@ -33,6 +33,9 @@ def save_pred(pred, root):
     with open(os.path.join(root, "prediction.pkl"), "wb") as f:
         pickle.dump(pred, f)
 
+def load_pred(root):
+    with open(os.path.join(root, "prediction.pkl"), 'rb') as f:
+        return pickle.load(f) 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a detector")
@@ -62,6 +65,7 @@ def parse_args():
     parser.add_argument("--speed_test", action="store_true")
     parser.add_argument("--local_rank", type=int, default=0)
     parser.add_argument("--testset", action="store_true")
+    parser.add_argument("--trainset", action="store_true")
 
     args = parser.parse_args()
     if "LOCAL_RANK" not in os.environ:
@@ -105,12 +109,19 @@ def main():
 
     model = build_detector(cfg.model, train_cfg=None, test_cfg=cfg.test_cfg)
 
+    assert not (args.testset and args.trainset)
     if args.testset:
         print("Use Test Set")
         dataset = build_dataset(cfg.data.test)
+        dataset_separation = 'test'
+    elif args.trainset:
+        print("Use Train Set")
+        dataset = build_dataset(cfg.data.train)
+        dataset_separation = 'train'
     else:
         print("Use Val Set")
         dataset = build_dataset(cfg.data.val)
+        dataset_separation = 'validation'
 
     data_loader = build_dataloader(
         dataset,
@@ -120,89 +131,102 @@ def main():
         shuffle=False,
     )
 
-    checkpoint = load_checkpoint(model, args.checkpoint, map_location="cpu")
+    if True:
+        checkpoint = load_checkpoint(model, args.checkpoint, map_location="cpu")
 
-    # put model on gpus
-    if distributed:
-        model = apex.parallel.convert_syncbn_model(model)
-        model = DistributedDataParallel(
-            model.cuda(cfg.local_rank),
-            device_ids=[cfg.local_rank],
-            output_device=cfg.local_rank,
-            # broadcast_buffers=False,
-            find_unused_parameters=True,
-        )
+        # put model on gpus
+        if distributed:
+            model = apex.parallel.convert_syncbn_model(model)
+            model = DistributedDataParallel(
+                model.cuda(cfg.local_rank),
+                device_ids=[cfg.local_rank],
+                output_device=cfg.local_rank,
+                # broadcast_buffers=False,
+                find_unused_parameters=True,
+            )
+        else:
+            # model = fuse_bn_recursively(model)
+            model = model.cuda()
+
+        model.eval()
+        mode = "val"
+
+        logger.info(f"work dir: {args.work_dir}")
+        if cfg.local_rank == 0:
+            prog_bar = torchie.ProgressBar(len(data_loader.dataset) // cfg.gpus)
+
+        detections = {}
+        cpu_device = torch.device("cpu")
+
+        start = time.time()
+
+        start = int(len(dataset) / 3)
+        end = int(len(dataset) * 2 /3)
+
+        time_start = 0 
+        time_end = 0 
+
+        for i, data_batch in enumerate(data_loader):
+            if i == start:
+                torch.cuda.synchronize()
+                time_start = time.time()
+
+            if i == end:
+                torch.cuda.synchronize()
+                time_end = time.time()
+
+            with torch.no_grad():
+                outputs = batch_processor(
+                    model, data_batch, train_mode=False, local_rank=args.local_rank,
+                )
+            for output in outputs:
+                token = output["metadata"]["token"]
+                for k, v in output.items():
+                    if k not in [
+                        "metadata",
+                    ]:
+                        output[k] = v.to(cpu_device)
+                detections.update(
+                    {token: output,}
+                )
+                if args.local_rank == 0:
+                    prog_bar.update()
+
+        synchronize()
+
+        all_predictions = all_gather(detections)
+
+        print("\n Total time per frame: ", (time_end -  time_start) / (end - start))
+
+        if args.local_rank != 0:
+            return
+
+        predictions = {}
+        for p in all_predictions:
+            predictions.update(p)
+
+        if not os.path.exists(args.work_dir):
+            os.makedirs(args.work_dir)
+
+        save_pred(predictions, args.work_dir)
     else:
-        # model = fuse_bn_recursively(model)
-        model = model.cuda()
+        predictions = load_pred(args.work_dir)
 
-    model.eval()
-    mode = "val"
+    # result_dict, _ = dataset.evaluation(copy.deepcopy(predictions), output_dir=args.work_dir, testset=args.testset)
 
-    logger.info(f"work dir: {args.work_dir}")
-    if cfg.local_rank == 0:
-        prog_bar = torchie.ProgressBar(len(data_loader.dataset) // cfg.gpus)
+    # if result_dict is not None:
+    #     for k, v in result_dict["results"].items():
+    #         print(f"Evaluation {k}: {v}")
 
-    detections = {}
-    cpu_device = torch.device("cpu")
+    for obj_type in ['cyclist', 'pedestrian', 'vehicle']:
+        result_dict, _ = dataset.evaluation(
+            copy.deepcopy(predictions), output_dir=args.work_dir,
+            dataset_separation=dataset_separation, obj_type=obj_type)
 
-    start = time.time()
+        if result_dict is not None:
+            for k, v in result_dict["results"].items():
+                print(f"Evaluation {k}: {v}")
 
-    start = int(len(dataset) / 3)
-    end = int(len(dataset) * 2 /3)
-
-    time_start = 0 
-    time_end = 0 
-
-    for i, data_batch in enumerate(data_loader):
-        if i == start:
-            torch.cuda.synchronize()
-            time_start = time.time()
-
-        if i == end:
-            torch.cuda.synchronize()
-            time_end = time.time()
-
-        with torch.no_grad():
-            outputs = batch_processor(
-                model, data_batch, train_mode=False, local_rank=args.local_rank,
-            )
-        for output in outputs:
-            token = output["metadata"]["token"]
-            for k, v in output.items():
-                if k not in [
-                    "metadata",
-                ]:
-                    output[k] = v.to(cpu_device)
-            detections.update(
-                {token: output,}
-            )
-            if args.local_rank == 0:
-                prog_bar.update()
-
-    synchronize()
-
-    all_predictions = all_gather(detections)
-
-    print("\n Total time per frame: ", (time_end -  time_start) / (end - start))
-
-    if args.local_rank != 0:
-        return
-
-    predictions = {}
-    for p in all_predictions:
-        predictions.update(p)
-
-    if not os.path.exists(args.work_dir):
-        os.makedirs(args.work_dir)
-
-    save_pred(predictions, args.work_dir)
-
-    result_dict, _ = dataset.evaluation(copy.deepcopy(predictions), output_dir=args.work_dir, testset=args.testset)
-
-    if result_dict is not None:
-        for k, v in result_dict["results"].items():
-            print(f"Evaluation {k}: {v}")
 
     if args.txt_result:
         assert False, "No longer support kitti"
