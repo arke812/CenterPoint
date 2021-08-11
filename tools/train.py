@@ -1,6 +1,11 @@
 import argparse
 import json
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import sys
 
 from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning, NumbaWarning
@@ -21,6 +26,7 @@ from det3d.torchie.apis import (
     set_random_seed,
     train_detector,
 )
+
 
 # import torch.cuda.profiler as profiler
 # import pyprof
